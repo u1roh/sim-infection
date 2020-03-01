@@ -10,12 +10,12 @@ export interface Behavior {
     nextSpot(time: number, region: Region): Spot | "home";
 }
 
-function createStudentBehavior(school: Spot): Behavior {
+function createStudentBehavior(school: Spot | null): Behavior {
     return {
         nextSpot: (time: number, region: Region) => {
             switch (time % 6) {
                 case 0: case 1:
-                    return school;
+                    return school == null ? "home" : school;
                 case 2:
                     return region.randomPublicSpot();
                 default:
@@ -102,23 +102,52 @@ class Region {
     }
 }
 
+export interface Parameter {
+    familyN: number;
+    initialInfectionN: number;
+    infectionProbability: number;
+    infectionPeriod: number;
+    familyPerCompanyRatio: number;
+    familyPerSchoolRatio: number;
+    familyPerTrainRatio: number;
+    familyPerPublicRatio: number;
+    schoolsClosed: boolean;
+}
+
+export function defaultParameter(): Parameter {
+    return {
+        familyN: 100000,
+        initialInfectionN: 10,
+        infectionProbability: 0.0001,
+        infectionPeriod: 6 * 10,    // 10 days
+        familyPerCompanyRatio: 100,
+        familyPerSchoolRatio: 500,
+        familyPerTrainRatio: 10000,
+        familyPerPublicRatio: 10,
+        schoolsClosed: false,
+    };
+}
+
+export interface Stat {
+    day: number;
+    populationN: number;
+    susceptiblePercent: number;
+    infectedPercent: number;
+    recoveredPercent: number;
+}
+
 export class Simulator {
-    private time: number = 0;
-    private region: Region;
-    private population: Person[] = [];
-    private infectionProbability = 0.001;
-    private infectionPeriod = 6 * 10;   // 10 days
-    private infectionN: number;
-    constructor(familyN: number, initialInfectionN: number) {
-        const companyN = Math.ceil(familyN / 100);
-        const schoolN = Math.ceil(familyN / 500);
-        const trainN = Math.ceil(familyN / 10000);
-        const publicN = Math.ceil(familyN / 10);
-        console.log("familyN = " + familyN);
-        console.log("companyN = " + companyN);
-        console.log("schoolN = " + schoolN);
-        console.log("trainN = " + trainN);
-        console.log("publicN = " + publicN);
+    param: Parameter;
+    time: number = 0;
+    region: Region;
+    population: Person[] = [];
+    infectionN: number;
+    constructor(param: Parameter) {
+        this.param = param;
+        const companyN = Math.ceil(param.familyN / param.familyPerCompanyRatio);
+        const schoolN = Math.ceil(param.familyN / param.familyPerSchoolRatio);
+        const trainN = Math.ceil(param.familyN / param.familyPerTrainRatio);
+        const publicN = Math.ceil(param.familyN / param.familyPerPublicRatio);
         const companies = new Array<Spot>();
         const schools = new Array<Spot>();
         const trains = new Array<Spot>();
@@ -136,10 +165,10 @@ export class Simulator {
         }
         function genStudent(home: Spot) {
             return new Person(createStudentBehavior(
-                schools[Math.floor(schoolN * Math.random())],
+                param.schoolsClosed ? null : schools[Math.floor(schoolN * Math.random())],
             ), home)
         }
-        for (let i = 0; i < familyN; ++i) {
+        for (let i = 0; i < param.familyN; ++i) {
             const home: Spot = { kind: "home", people: [] };
             const workerN = 1 + Math.round(Math.random());
             const studentN = Math.floor(3 * Math.random());
@@ -150,9 +179,9 @@ export class Simulator {
             for (let p of home.people) { this.population.push(p); }
             homes.push(home);
         }
-        for (let i = 0; i < initialInfectionN; ++i) {
+        for (let i = 0; i < param.initialInfectionN; ++i) {
             const index = Math.floor(this.population.length * Math.random());
-            this.population[index].infect(this.infectionPeriod);
+            this.population[index].infect(param.infectionPeriod);
         }
         const spots = new Map<SpotKind, Spot[]>();
         spots.set("company", companies);
@@ -161,7 +190,7 @@ export class Simulator {
         spots.set("public", publics);
         spots.set("home", homes);
         this.region = new Region(spots);
-        this.infectionN = initialInfectionN;
+        this.infectionN = param.initialInfectionN;
     }
     step() {
         this.infectionN = 0;
@@ -170,10 +199,10 @@ export class Simulator {
             for (const spot of spots) {
                 // infection
                 const infectionN = spot.people.filter(p => p.isInfected()).length;
-                const infectionProb = 1.0 - Math.pow(1.0 - this.infectionProbability, infectionN);
+                const infectionProb = 1.0 - Math.pow(1.0 - this.param.infectionProbability, infectionN);
                 for (const p of spot.people) {
                     if (p.isSusceptible() && Math.random() < infectionProb) {
-                        p.infect(this.infectionPeriod);
+                        p.infect(this.param.infectionPeriod);
                     }
                 }
                 // clear people in spot
@@ -190,13 +219,27 @@ export class Simulator {
         // increment time
         ++this.time;
     }
-    getInfectionN() {
-        return this.infectionN;
-    }
     getInfectionRate() {
         return this.infectionN / this.population.length;
     }
     getDay() {
-        return this.time / 6;
+        return Math.floor(this.time / 6);
+    }
+    stat(): Stat {
+        let susceptibleN = 0;
+        let infectedN = 0;
+        let recoveredN = 0;
+        for (let p of this.population) {
+            if (p.isSusceptible()) susceptibleN++;
+            else if (p.isInfected()) infectedN++;
+            else recoveredN++;
+        }
+        return {
+            day: this.getDay(),
+            populationN: this.population.length,
+            infectedPercent: Math.round(10000.0 * infectedN / this.population.length) / 100.0,
+            susceptiblePercent: Math.round(10000.0 * susceptibleN / this.population.length) / 100.0,
+            recoveredPercent: Math.round(10000.0 * recoveredN / this.population.length) / 100.0,
+        };
     }
 }
